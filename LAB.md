@@ -2,7 +2,17 @@
 
 ## The situation
 
-Beanie's receipts live in an Azure storage account. Two things can go wrong there and nobody would know: a bot starts hammering it (a bill, then an outage), or someone deletes the account by mistake (a disaster, with a name attached). Azure records both, in two very different places: **metrics** (numbers, every minute) and the **activity log** (who did what to which resource). Azure Monitor can alert on both, and both alerts need to reach a human through the same door: an **action group**.
+```text
+RUNBOOK RB-17   Alerting on the receipts store
+Owner      : on-call engineer (you, from today)
+Trigger    : the regulator's review of Beanie, next week
+Question   : "Show me that someone is paged when the receipts are attacked or deleted."
+Evidence   : two alerts that fired, one action group that delivered them
+```
+
+Beanie's receipts live in one Azure storage account. Two failures are silent today: a bot hammers the account (a bill, then an outage), or somebody deletes it (a disaster with a name attached). Azure records them in two places: **metrics** (numbers, every minute) and the **activity log** (who did what to which resource). Both alerts must reach a human through one door: an **action group**.
+
+This runbook is written to be followed at 3 a.m. Each step has an action and a check. Do the check before the next step.
 
 > **Your mission**
 > - Create one action group, `ag-beanie-oncall`, with an e-mail and a webhook receiver
@@ -11,33 +21,37 @@ Beanie's receipts live in an Azure storage account. Two things can go wrong ther
 > - Let the checker attack your storage account and prove that both alerts fire
 > - Tear down and prove it
 
-**Time:** 105-120 min | **Cost:** a few cents (one storage account, alert rules) | **You need:** an Azure subscription, the Azure CLI, Python 3 and a terminal.
+**Time:** 75-90 min | **Cost:** a few cents (one storage account, alert rules) | **You need:** an Azure subscription, the Azure CLI, Python 3 and a terminal.
 
 > [!NOTE]
 > **If Azure answers `QuotaExceeded` or `SkuNotAvailable`, do not worry.** It is normal when Azure is in high demand, and it happens to everyone, including professionals. Run `az vm list-usage --location <region> -o table` to see your limits. To ask for more, open the portal: **Quotas > Compute > Request adjustment**, or open a support request. Often a different region or size works at once. This lab only needs a storage account, so you will rarely meet it here, but you will in the other Azure labs: get used to asking.
 
 ---
 
-## Part 0 - The target
+## Step 0 - Prepare the target
 
-Fork this repository, clone your fork and run:
+**Action.** Fork this repository, clone your fork and run:
 
 ```bash
 az login
 ./setup.sh
 ```
 
-It creates the resource group `rg-monitor-alerts` and a storage account whose name starts with `stmon`, with a container `receipts`. Look at it in the portal: **Storage account > Monitoring > Metrics**. Pick the metric `Transactions`, aggregation `Sum`.
+**Check.** The resource group `rg-monitor-alerts` exists with a storage account whose name starts with `stmon`, and a container `receipts`. In the portal: **Storage account > Monitoring > Metrics**, metric `Transactions`, aggregation `Sum`.
 
-> **Predict** Nobody is using the account. What does the graph show? What will it show when 300 requests arrive in one minute?
+> **Predict** Nobody uses the account. What does the graph show? What will it show when 300 requests arrive in one minute?
 
 ---
 
-## Part 1 - The door: an action group
+## Step 1 - Create the action group
 
-An alert rule never sends anything by itself. It points to an **action group**, a reusable list of receivers. Create **`ag-beanie-oncall`** in `rg-monitor-alerts` with:
+<!-- gif: recon -->
 
-- an **e-mail** receiver (use any address; it is not confirmed in this lab);
+An alert rule sends nothing by itself. It points to an **action group**: a reusable list of receivers.
+
+**Action.** Create **`ag-beanie-oncall`** in `rg-monitor-alerts` with:
+
+- an **e-mail** receiver (any address; it is not confirmed in this lab);
 - a **webhook** receiver (any HTTPS URL, for example a chat tool's incoming webhook);
 - a **short name** of 12 characters at most (it appears in SMS and e-mails).
 
@@ -45,13 +59,15 @@ An alert rule never sends anything by itself. It points to an **action group**, 
 az monitor action-group create --help
 ```
 
-> **Think** Why one action group for many alert rules rather than e-mail addresses inside each rule? What happens on the day the on-call person changes?
+**Check.** `az monitor action-group show` lists both receivers.
+
+> **Think** Why one action group for many alert rules, instead of e-mail addresses inside each rule? What happens on the day the on-call person changes?
 
 ---
 
-## Part 2 - The metric alert
+## Step 2 - Create the metric alert
 
-Create **`alert-storage-transactions`** on your storage account:
+**Action.** Create **`alert-storage-transactions`** on your storage account:
 
 - metric **`Transactions`**, aggregation **Total**, operator **greater than**, a threshold you choose (between 20 and 500) that normal traffic never reaches;
 - **window 5 minutes, evaluated every 1 minute**;
@@ -62,13 +78,17 @@ Create **`alert-storage-transactions`** on your storage account:
 az monitor metrics alert create --help
 ```
 
-> **Think** With a 5-minute window evaluated every minute, how long after the spike starts can the alert fire at best? What does a 1-minute window gain, and what does it cost in false alarms?
+**Check.** `az monitor metrics alert show` returns the scope, the criteria and your action group.
+
+> **Think** With a 5-minute window evaluated every minute, how long after a spike starts can the alert fire at best? What does a 1-minute window gain, and what does it cost in false alarms?
 
 ---
 
-## Part 3 - The activity log alert
+## Step 3 - Create the activity log alert
 
-Metrics tell you about traffic. To know **who deleted something**, you need the activity log. Create **`alert-storage-deleted`**:
+Metrics tell you about traffic. The activity log tells you **who deleted something**.
+
+**Action.** Create **`alert-storage-deleted`**:
 
 - scope: your resource group (or the subscription);
 - condition: category **Administrative** and operation **`Microsoft.Storage/storageAccounts/delete`**;
@@ -78,19 +98,33 @@ Metrics tell you about traffic. To know **who deleted something**, you need the 
 az monitor activity-log alert create --help
 ```
 
-> **Think** This alert has no threshold and no window. Why? And what would be the cost of making the alert too broad, for example every "write" operation?
+**Check.** `az monitor activity-log alert show` returns both conditions and the action group.
+
+> **Think** This alert has no threshold and no window. Why? And what would be the cost of making it too broad, for example every "write" operation?
 
 ---
 
-## Part 4 - Prove it
+## Step 4 - Prove it
+
+<!-- gif: verify -->
+
+**Action.**
 
 ```bash
 ./verify.sh
 ```
 
-It reads the configuration of your three resources, then attacks: it sends 300 read requests to your storage account, creates and deletes a throwaway storage account, and waits for Azure to report both alerts as **Fired**. It takes about 10 to 15 minutes. Metrics arrive one to three minutes late, which is part of the lesson. Fix what is red and run it again until it ends with **ALL CHECKS PASSED**. Paste the output into `SUBMISSION.md` **before** you tear down. Then open **Monitor > Alerts** in the portal and look at the two fired alerts.
+The script reads the configuration of your three resources, then attacks: it sends 300 read requests to your storage account, creates and deletes a throwaway storage account, and waits for Azure to report both alerts as **Fired**. It takes 10 to 15 minutes. Metrics arrive one to three minutes late. That delay is expected.
 
-> **Stuck?** The metric alert never fires: the scope must be the storage account itself, the threshold must be below 300, and the aggregation must be `Total` (not `Average`). The activity log alert never fires: the operation name must be exactly as written and the scope must include the resource group. Action group checks fail: both a receiver of type e-mail and of type webhook are needed.
+**Check.** The output ends with **ALL CHECKS PASSED**. Paste it into `SUBMISSION.md` **before** you tear down. Then open **Monitor > Alerts** in the portal and look at the two fired alerts.
+
+**If it fails.**
+
+| Symptom | Cause |
+|---------|-------|
+| The metric alert never fires | The scope is not the storage account itself, the threshold is not below 300, or the aggregation is `Average` and not `Total` |
+| The activity log alert never fires | The operation name differs from the one above, or the scope does not include the resource group |
+| Action group checks fail | A receiver of type e-mail **and** one of type webhook are both needed |
 
 ---
 
@@ -99,17 +133,6 @@ It reads the configuration of your three resources, then attacks: it sends 300 r
 - Add an alert on **availability** or on `Ingress` bytes, with a dynamic threshold. When is a dynamic threshold better than a fixed one?
 - Add an **alert processing rule** that mutes the alerts during a maintenance window. Why not delete the alert instead?
 - Add an alert on a **log query** (needs a Log Analytics workspace). What can it express that a metric cannot?
-
----
-
-## Teardown (mandatory)
-
-```bash
-./teardown.sh
-./verify-teardown.sh
-```
-
-The second command must print `TEARDOWN VERIFIED (`. Paste it into `SUBMISSION.md`.
 
 <!-- teardown:start (generated by labs.py, do not edit) -->
 ## Tear down (mandatory)
